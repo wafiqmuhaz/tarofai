@@ -1,0 +1,29 @@
+{
+    "testQueries": [
+        {
+            "id": 1,
+            "query": "Bagaimana hukum sholat jumat?",
+            "category": "ibadah"
+        },
+        {
+            "id": 2,
+            "query": "Apa itu bid'ah dalam Islam?",
+            "category": "aqidah"
+        },
+        {
+            "id": 3,
+            "query": "Bagaimana tata cara wudhu yang benar?",
+            "category": "ibadah"
+        },
+        {
+            "id": 4,
+            "query": "Hukum musik dalam Islam menurut Salafi",
+            "category": "muamalah"
+        },
+        {
+            "id": 5,
+            "query": "Siapa saja ulama Salafi yang terkenal?",
+            "category": "manhaj"
+        }
+    ]
+}
