@@ -8,7 +8,7 @@ class AgentClient:
     
     def __init__(self):
         self.base_url = settings.agent_url
-        self.timeout = 120.0  # 2 minutes for LLM processing
+        self.timeout = 60.0  # Reduced from 120s - optimized agent is faster
     
     async def search(self, query: str) -> dict:
         """

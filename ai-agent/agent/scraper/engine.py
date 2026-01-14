@@ -1,16 +1,17 @@
-"""Async web scraping engine for approved Islamic sources."""
+"""Async web scraping engine for approved Islamic sources - OPTIMIZED VERSION."""
 import asyncio
 import re
+import time
 import aiohttp
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
-from .whitelist import is_approved_domain, get_domain, build_search_urls_multi
+from .whitelist import is_approved_domain, get_domain, SEARCH_PATTERNS
 from .normalizer import extract_article_content
 
 
 class ScrapingEngine:
-    """Async scraping engine with multi-query fallback strategy."""
+    """Async scraping engine with PARALLEL scraping and early termination."""
     
     def __init__(self):
         self.headers = {
@@ -18,8 +19,17 @@ class ScrapingEngine:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "id-ID,id;q=0.9,en;q=0.8,ar;q=0.7",
         }
-        self.timeout = aiohttp.ClientTimeout(total=30)
-        self.rate_limit_delay = 0.3
+        # OPTIMIZED: Aggressive timeouts
+        self.source_timeout = aiohttp.ClientTimeout(total=8)  # 8s per source
+        self.article_timeout = aiohttp.ClientTimeout(total=5)  # 5s per article
+        self.overall_timeout = 15  # 15s total for all scraping
+        
+        # Concurrency controls
+        self.max_concurrent_sources = 7  # All sources in parallel
+        self.max_concurrent_articles = 4  # Limit article fetches
+        
+        # Early termination
+        self.min_articles_for_early_exit = 3  # Stop when we have enough
         
         # Patterns that indicate NON-article pages (to skip)
         self.skip_patterns = [
@@ -45,16 +55,20 @@ class ScrapingEngine:
             r'/post/',
         ]
     
-    async def fetch_page(self, url: str, session: aiohttp.ClientSession) -> Optional[str]:
-        """Fetch a single page."""
+    async def fetch_page(self, url: str, session: aiohttp.ClientSession, 
+                         timeout: aiohttp.ClientTimeout = None) -> Optional[str]:
+        """Fetch a single page with timeout."""
         if not is_approved_domain(url):
             return None
         
         try:
-            async with session.get(url, headers=self.headers) as response:
+            async with session.get(url, headers=self.headers, timeout=timeout or self.source_timeout) as response:
                 if response.status == 200:
                     return await response.text()
                 return None
+        except asyncio.TimeoutError:
+            print(f"[TIMEOUT] {get_domain(url)}")
+            return None
         except Exception:
             return None
     
@@ -125,88 +139,153 @@ class ScrapingEngine:
                     })
         
         candidates.sort(key=lambda x: x['confidence'], reverse=True)
-        return candidates[:5]
+        return candidates[:3]  # Get top 3 candidates
     
-    async def _search_single_query(self, query: str, session: aiohttp.ClientSession) -> list[dict]:
-        """Search with a single query variation."""
-        results = []
-        search_data = build_search_urls_multi(query)
-        
-        for search_url in search_data['urls']:
-            domain = get_domain(search_url)
-            
-            search_html = await self.fetch_page(search_url, session)
-            if not search_html:
-                continue
-            
-            article_candidates = await self.extract_article_links(search_html, search_url)
-            
-            if not article_candidates:
-                continue
-            
-            for candidate in article_candidates[:2]:
-                await asyncio.sleep(self.rate_limit_delay)
-                
-                article_url = candidate['url']
-                confidence = candidate['confidence']
-                
-                article_html = await self.fetch_page(article_url, session)
+    async def _fetch_article_content(self, candidate: dict, session: aiohttp.ClientSession, 
+                                     domain: str, semaphore: asyncio.Semaphore) -> Optional[dict]:
+        """Fetch and extract content from a single article."""
+        async with semaphore:
+            try:
+                article_html = await self.fetch_page(
+                    candidate['url'], session, timeout=self.article_timeout
+                )
                 
                 if article_html:
                     article_data = extract_article_content(article_html)
                     if article_data["content"] and len(article_data["content"]) > 200:
-                        results.append({
-                            "url": article_url,
+                        return {
+                            "url": candidate['url'],
                             "domain": domain,
                             "title": article_data["title"] or candidate.get('link_text', 'Untitled'),
                             "content": article_data["content"],
                             "excerpt": article_data["excerpt"],
-                            "confidence": confidence,
-                            "source_type": "specific_article" if confidence > 0.7 else "general_reference"
-                        })
+                            "confidence": candidate['confidence'],
+                            "source_type": "specific_article" if candidate['confidence'] > 0.7 else "general_reference"
+                        }
+            except Exception:
+                pass
+            return None
+    
+    async def _search_single_source(self, domain: str, search_url: str, 
+                                    session: aiohttp.ClientSession,
+                                    article_semaphore: asyncio.Semaphore) -> list[dict]:
+        """Search a single source and fetch articles - PARALLEL article fetching."""
+        results = []
+        start = time.time()
+        
+        try:
+            # Fetch search results page
+            search_html = await self.fetch_page(search_url, session)
+            if not search_html:
+                return []
+            
+            # Extract article links
+            article_candidates = await self.extract_article_links(search_html, search_url)
+            if not article_candidates:
+                return []
+            
+            # PARALLEL: Fetch all article candidates simultaneously
+            tasks = [
+                self._fetch_article_content(candidate, session, domain, article_semaphore)
+                for candidate in article_candidates[:2]  # Limit to 2 per source
+            ]
+            
+            fetched = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for result in fetched:
+                if isinstance(result, dict) and result:
+                    results.append(result)
+            
+            elapsed = time.time() - start
+            if results:
+                print(f"[SOURCE] ✓ {domain}: {len(results)} articles in {elapsed:.1f}s")
+            
+        except asyncio.TimeoutError:
+            print(f"[SOURCE] ✗ {domain}: timeout")
+        except Exception as e:
+            print(f"[SOURCE] ✗ {domain}: {str(e)[:50]}")
         
         return results
     
     async def scrape_query(self, query: str) -> list[dict]:
         """
-        Scrape content with multi-query fallback strategy.
+        Scrape content with PARALLEL scraping across all sources.
         
-        Strategy:
-        1. Use NLP preprocessor to extract keywords and synonyms
-        2. Try multiple search variations
-        3. Combine and deduplicate results
+        OPTIMIZATIONS:
+        1. All sources searched in parallel
+        2. Articles fetched in parallel with semaphore limiting
+        3. Early termination when enough results found
+        4. Aggressive timeouts per source
         """
         from agent.nlp.preprocessor import get_optimized_search_queries
         
-        search_variations = get_optimized_search_queries(query)
-        print(f"[SEARCH] Will try {len(search_variations)} variations")
+        start_time = time.time()
+        
+        # Get search variations (limit to 2 for speed)
+        search_variations = get_optimized_search_queries(query)[:2]
+        print(f"[SEARCH] Using {len(search_variations)} query variations")
+        
+        # Use primary query for all sources
+        primary_query = search_variations[0] if search_variations else query
+        encoded_query = primary_query.replace(" ", "+")
+        
+        # Build all search URLs
+        search_tasks = []
+        for domain, pattern in SEARCH_PATTERNS.items():
+            search_url = pattern.format(encoded_query)
+            search_tasks.append((domain, search_url))
+        
+        print(f"[SEARCH] Searching {len(search_tasks)} sources in PARALLEL")
         
         all_results = []
         seen_urls = set()
+        article_semaphore = asyncio.Semaphore(self.max_concurrent_articles)
         
-        async with aiohttp.ClientSession(timeout=self.timeout) as session:
-            for variation in search_variations:
-                print(f"[SEARCH] Trying variation: '{variation}'")
-                
-                results = await self._search_single_query(variation, session)
-                
-                # Add unique results
-                for result in results:
-                    if result['url'] not in seen_urls:
-                        seen_urls.add(result['url'])
-                        all_results.append(result)
-                
-                # If we have enough results, stop
-                if len(all_results) >= 6:
-                    print(f"[SEARCH] Found enough results, stopping early")
-                    break
-                
-                # Small delay between variations
-                if len(all_results) == 0:
-                    await asyncio.sleep(0.5)
+        # Create connector with limits
+        connector = aiohttp.TCPConnector(limit=10, limit_per_host=2)
+        
+        async with aiohttp.ClientSession(connector=connector) as session:
+            # PARALLEL: Search all sources simultaneously
+            async def search_with_timeout(domain: str, search_url: str):
+                try:
+                    return await asyncio.wait_for(
+                        self._search_single_source(domain, search_url, session, article_semaphore),
+                        timeout=self.source_timeout.total
+                    )
+                except asyncio.TimeoutError:
+                    print(f"[SOURCE] ✗ {domain}: overall timeout")
+                    return []
+            
+            tasks = [
+                search_with_timeout(domain, url) 
+                for domain, url in search_tasks
+            ]
+            
+            # Use asyncio.as_completed for EARLY TERMINATION
+            for coro in asyncio.as_completed(tasks, timeout=self.overall_timeout):
+                try:
+                    results = await coro
+                    
+                    for result in results:
+                        if result['url'] not in seen_urls:
+                            seen_urls.add(result['url'])
+                            all_results.append(result)
+                    
+                    # EARLY TERMINATION: Stop when we have enough
+                    if len(all_results) >= self.min_articles_for_early_exit:
+                        elapsed = time.time() - start_time
+                        print(f"[SEARCH] Early exit: {len(all_results)} articles in {elapsed:.1f}s")
+                        break
+                        
+                except asyncio.TimeoutError:
+                    print(f"[SEARCH] Source timed out, continuing...")
+                except Exception as e:
+                    print(f"[SEARCH] Source error: {str(e)[:50]}")
         
         # Sort by confidence
         all_results.sort(key=lambda x: x['confidence'], reverse=True)
-        print(f"[DONE] Total scraped: {len(all_results)} articles")
+        
+        elapsed = time.time() - start_time
+        print(f"[DONE] Total scraped: {len(all_results)} articles in {elapsed:.1f}s")
         
         return all_results

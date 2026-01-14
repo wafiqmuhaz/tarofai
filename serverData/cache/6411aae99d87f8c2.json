@@ -1,0 +1,18 @@
+{
+  "query": "test query optimization",
+  "query_hash": "6411aae99d87f8c2",
+  "keywords": [
+    "optimization",
+    "query",
+    "test"
+  ],
+  "answer": "Test answer",
+  "sources": [
+    {
+      "title": "Test",
+      "url": "http://test.com",
+      "domain": "test.com"
+    }
+  ],
+  "cached_at": "2026-01-14T10:30:56.041057"
+}
