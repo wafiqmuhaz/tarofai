@@ -1,6 +1,7 @@
 """Search API routes."""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+import httpx
 
 from app.services.agent_client import AgentClient
 
@@ -56,5 +57,13 @@ async def search(request: SearchRequest):
             ],
             cached=result.get("cached", False)
         )
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(
+                status_code=429, 
+                detail="Layanan sedang sibuk. Silakan coba lagi dalam beberapa saat.",
+                headers={"Retry-After": "30"}
+            )
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")

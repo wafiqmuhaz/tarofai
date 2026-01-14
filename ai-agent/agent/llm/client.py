@@ -7,6 +7,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+class RateLimitError(Exception):
+    """Raised when API rate limit is exceeded after all retries."""
+    pass
+
+
 class OpenRouterClient:
     """Client for OpenRouter API with retry support."""
     
@@ -87,7 +92,7 @@ class OpenRouterClient:
                 raise
         
         # All retries exhausted
-        raise Exception(f"API rate limit exceeded after {self.max_retries} retries. Please wait a moment and try again.")
+        raise RateLimitError(f"API rate limit exceeded after {self.max_retries} retries. Please wait a moment and try again.")
     
     async def health_check(self) -> bool:
         """Check if OpenRouter API is accessible."""

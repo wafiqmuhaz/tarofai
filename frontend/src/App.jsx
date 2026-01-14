@@ -57,7 +57,11 @@ function App() {
             })
 
             if (!response.ok) {
-                throw new Error('Pencarian gagal. Silakan coba lagi.')
+                if (response.status === 429) {
+                    throw new Error('Layanan sedang sibuk. Silakan coba lagi dalam beberapa saat.')
+                }
+                const errorData = await response.json().catch(() => ({}))
+                throw new Error(errorData.detail || 'Pencarian gagal. Silakan coba lagi.')
             }
 
             const data = await response.json()
@@ -135,6 +139,8 @@ function App() {
                         answer={result.answer}
                         sources={result.sources}
                         cached={result.cached}
+                        intent={result.intent}
+                        processingTime={result.processing_time}
                     />
                 )}
 
