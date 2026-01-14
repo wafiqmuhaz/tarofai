@@ -1,6 +1,6 @@
-import { useState } from 'react'
 import SearchBar from './components/SearchBar'
 import ResultCard from './components/ResultCard'
+import useStreamingSearch from './hooks/useStreamingSearch'
 
 const APPROVED_SOURCES = [
     "salafipublications.com",
@@ -37,41 +37,24 @@ const APPROVED_SOURCES = [
 ]
 
 function App() {
-    const [result, setResult] = useState(null)
-    const [loading, setLoading] = useState(false)
-    const [error, setError] = useState(null)
-    const [lastQuery, setLastQuery] = useState('')
+    const {
+        answer,
+        sources,
+        status,
+        isStreaming,
+        error,
+        metadata,
+        search
+    } = useStreamingSearch()
 
-    const handleSearch = async (query) => {
+    const handleSearch = (query) => {
         if (!query.trim()) return
-
-        setLoading(true)
-        setError(null)
-        setLastQuery(query)
-
-        try {
-            const response = await fetch('/api/search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query }),
-            })
-
-            if (!response.ok) {
-                if (response.status === 429) {
-                    throw new Error('Layanan sedang sibuk. Silakan coba lagi dalam beberapa saat.')
-                }
-                const errorData = await response.json().catch(() => ({}))
-                throw new Error(errorData.detail || 'Pencarian gagal. Silakan coba lagi.')
-            }
-
-            const data = await response.json()
-            setResult(data)
-        } catch (err) {
-            setError(err.message || 'Terjadi kesalahan. Silakan coba lagi.')
-        } finally {
-            setLoading(false)
-        }
+        search(query)
     }
+
+    // Determine if we should show content
+    const hasContent = answer || sources.length > 0
+    const isLoading = isStreaming && !answer
 
     return (
         <div className="app">
@@ -113,6 +96,36 @@ function App() {
                         transform: translateX(-50%);
                     }
                 }
+
+                .status-indicator {
+                    display: flex;
+                    align-items: center;
+                    gap: 12px;
+                    padding: 16px 24px;
+                    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+                    border-radius: 12px;
+                    color: #e5e7eb;
+                    margin-bottom: 16px;
+                    border: 1px solid #334155;
+                }
+
+                .status-spinner {
+                    width: 20px;
+                    height: 20px;
+                    border: 2px solid #334155;
+                    border-top-color: #38bdf8;
+                    border-radius: 50%;
+                    animation: spin 1s linear infinite;
+                }
+
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+
+                .status-text {
+                    font-size: 14px;
+                    opacity: 0.9;
+                }
             `}</style>
 
             <header className="header">
@@ -127,24 +140,33 @@ function App() {
             </header>
 
             <section className="search-section">
-                <SearchBar onSearch={handleSearch} loading={loading} />
+                <SearchBar onSearch={handleSearch} loading={isLoading} />
             </section>
 
             <section className="results-section">
                 {error && <div className="error-message">⚠️ {error}</div>}
 
-                {result && !loading && (
+                {/* Status indicator during processing */}
+                {status && (
+                    <div className="status-indicator">
+                        <div className="status-spinner"></div>
+                        <span className="status-text">{status.message}</span>
+                    </div>
+                )}
+
+                {hasContent && (
                     <ResultCard
-                        query={lastQuery}
-                        answer={result.answer}
-                        sources={result.sources}
-                        cached={result.cached}
-                        intent={result.intent}
-                        processingTime={result.processing_time}
+                        query=""
+                        answer={answer}
+                        sources={sources}
+                        cached={metadata?.cached || false}
+                        intent={metadata?.intent}
+                        processingTime={metadata?.processing_time}
+                        isStreaming={isStreaming}
                     />
                 )}
 
-                {!result && !loading && !error && (
+                {!hasContent && !isStreaming && !error && (
                     <div className="empty-state">
                         <div className="empty-icon">📚</div>
                         <p>Ajukan pertanyaan seputar Islam</p>
@@ -173,3 +195,4 @@ function App() {
 }
 
 export default App
+

@@ -1,6 +1,6 @@
 import SourceCitation from './SourceCitation'
 
-function ResultCard({ query, answer, sources, cached, intent, processingTime }) {
+function ResultCard({ query, answer, sources, cached, intent, processingTime, isStreaming }) {
     const getIntentLabel = (intent) => {
         const labels = {
             'definisi': 'Definisi',
@@ -27,10 +27,35 @@ function ResultCard({ query, answer, sources, cached, intent, processingTime }) 
         return colors[intent] || '#6b7280'
     }
 
+    // Format answer with markdown-like styling
+    const formatAnswer = (text) => {
+        return text
+            .replace(/^## (.+)$/gm, '<h3 style="color:#38bdf8;margin:1rem 0 0.5rem;font-size:1.1rem;">$1</h3>')
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\n/g, '<br/>')
+    }
+
     return (
         <div className={`result-card ${cached ? 'cached' : ''}`}>
+            {/* Inline styles for streaming cursor */}
+            <style>{`
+                @keyframes blink {
+                    0%, 50% { opacity: 1; }
+                    51%, 100% { opacity: 0; }
+                }
+                .streaming-cursor {
+                    display: inline-block;
+                    width: 2px;
+                    height: 1.2em;
+                    background: #38bdf8;
+                    margin-left: 2px;
+                    vertical-align: text-bottom;
+                    animation: blink 1s infinite;
+                }
+            `}</style>
+
             <div className="result-header">
-                <span className="result-query">Pertanyaan: {query}</span>
+                {query && <span className="result-query">Pertanyaan: {query}</span>}
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     {intent && (
                         <span
@@ -47,7 +72,7 @@ function ResultCard({ query, answer, sources, cached, intent, processingTime }) 
                         </span>
                     )}
                     {cached && <span className="cached-badge">Cached</span>}
-                    {processingTime > 0 && (
+                    {processingTime > 0 && !isStreaming && (
                         <span style={{
                             fontSize: '11px',
                             color: '#6b7280',
@@ -56,17 +81,24 @@ function ResultCard({ query, answer, sources, cached, intent, processingTime }) 
                             {processingTime.toFixed(2)}s
                         </span>
                     )}
+                    {isStreaming && (
+                        <span style={{
+                            fontSize: '11px',
+                            color: '#38bdf8',
+                            fontFamily: 'monospace'
+                        }}>
+                            streaming...
+                        </span>
+                    )}
                 </div>
             </div>
 
-            <div className="result-answer" dangerouslySetInnerHTML={{
-                __html: answer
-                    .replace(/^## (.+)$/gm, '<h3 style="color:#38bdf8;margin:1rem 0 0.5rem;font-size:1.1rem;">$1</h3>')
-                    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                    .replace(/\n/g, '<br/>')
-            }} />
+            <div className="result-answer">
+                <span dangerouslySetInnerHTML={{ __html: formatAnswer(answer) }} />
+                {isStreaming && <span className="streaming-cursor"></span>}
+            </div>
 
-            {sources && sources.length > 0 && (
+            {sources && sources.length > 0 && !isStreaming && (
                 <div className="sources-section">
                     <h3 className="sources-title">Referensi Sumber ({sources.length})</h3>
                     <div className="sources-list">

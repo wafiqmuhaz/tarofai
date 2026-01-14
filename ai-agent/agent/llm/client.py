@@ -237,6 +237,139 @@ class OpenRouterClient:
             "Please wait a few minutes and try again."
         )
     
+    async def generate_stream(self, system_prompt: str, user_prompt: str, intent: str = "general"):
+        """
+        Generate streaming response from LLM.
+        
+        Yields tokens as they arrive from OpenRouter streaming API.
+        
+        Args:
+            system_prompt: System instruction
+            user_prompt: User's message
+            intent: Query intent for adaptive token limits
+            
+        Yields:
+            dict with type and content: {"type": "token", "content": "..."} or {"type": "done"}
+        """
+        token_settings = self._get_token_settings(intent)
+        
+        # Reset to primary model at start of new request
+        self._reset_model()
+        
+        total_attempts = 0
+        max_total_attempts = len(self.models) * self.max_retries_per_model
+        
+        while total_attempts < max_total_attempts:
+            current_model = self._get_current_model()
+            model_attempt = total_attempts % self.max_retries_per_model
+            
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    print(f"[LLM STREAM] Using model: {current_model} (attempt {model_attempt + 1})")
+                    
+                    async with client.stream(
+                        "POST",
+                        f"{self.base_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                            "HTTP-Referer": "https://tarofa.local",
+                            "X-Title": "Tarofa Islamic Search"
+                        },
+                        json={
+                            "model": current_model,
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt}
+                            ],
+                            "temperature": token_settings["temperature"],
+                            "max_tokens": token_settings["max_tokens"],
+                            "stream": True
+                        }
+                    ) as response:
+                        if response.status_code == 429:
+                            # Rate limited - retry with backoff
+                            total_attempts += 1
+                            if (model_attempt + 1) >= self.max_retries_per_model:
+                                if not self._next_model():
+                                    raise RateLimitError("All models rate limited.")
+                            delay = self._calculate_delay(model_attempt)
+                            print(f"[LLM STREAM] Rate limited. Waiting {delay:.1f}s...")
+                            await asyncio.sleep(delay)
+                            continue
+                        
+                        if response.status_code == 404:
+                            print(f"[LLM STREAM] Model '{current_model}' not found, trying next...")
+                            total_attempts += 1
+                            if not self._next_model():
+                                raise ValueError(f"All models failed.")
+                            continue
+                        
+                        response.raise_for_status()
+                        
+                        # Successfully connected - stream tokens
+                        if self._current_model_index > 0:
+                            print(f"[LLM STREAM] ✓ Streaming with fallback model: {current_model}")
+                        else:
+                            print(f"[LLM STREAM] ✓ Streaming with primary model")
+                        
+                        # Parse SSE stream
+                        async for line in response.aiter_lines():
+                            if not line:
+                                continue
+                            
+                            if line.startswith("data: "):
+                                data = line[6:]  # Remove "data: " prefix
+                                
+                                if data == "[DONE]":
+                                    yield {"type": "done"}
+                                    return
+                                
+                                try:
+                                    import json
+                                    chunk = json.loads(data)
+                                    choices = chunk.get("choices", [])
+                                    if choices:
+                                        delta = choices[0].get("delta", {})
+                                        content = delta.get("content", "")
+                                        if content:
+                                            yield {"type": "token", "content": content}
+                                except json.JSONDecodeError:
+                                    continue
+                        
+                        # Stream completed successfully
+                        yield {"type": "done"}
+                        return
+                        
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    total_attempts += 1
+                    if (model_attempt + 1) >= self.max_retries_per_model:
+                        if not self._next_model():
+                            raise RateLimitError("All models rate limited.")
+                    delay = self._calculate_delay(model_attempt)
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+                
+            except asyncio.TimeoutError:
+                total_attempts += 1
+                print(f"[LLM STREAM] Timeout on attempt {total_attempts}")
+                if not self._next_model():
+                    raise TimeoutError("All models timed out")
+                continue
+                
+            except Exception as e:
+                total_attempts += 1
+                print(f"[LLM STREAM] Error: {str(e)[:50]}")
+                if total_attempts < max_total_attempts:
+                    delay = self._calculate_delay(model_attempt)
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+        
+        raise RateLimitError(f"Streaming failed after {total_attempts} attempts.")
+    
     async def health_check(self) -> bool:
         """Check if OpenRouter API is accessible."""
         try:
